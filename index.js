@@ -2,7 +2,7 @@ const TelegramBot = require('node-telegram-bot-api');
 const fetch = require('node-fetch');
 const fs = require('fs');
 const path = require('path');
-const { OWNER_ID, BOT_TOKEN, DEFAULT_IMG_TO_PROMPT_INSTRUCTION, DEFAULT_CAPTION_INSTRUCTION } = require('./config');
+const { OWNER_ID, BOT_TOKEN, CORE_PROMPT_INSTRUCTION, CORE_CAPTION_INSTRUCTION, DEFAULT_CUSTOM_PROMPT_INSTRUCTION, DEFAULT_CUSTOM_CAPTION_INSTRUCTION } = require('./config');
 
 // Initialize bot
 const bot = new TelegramBot(BOT_TOKEN, { polling: true });
@@ -20,11 +20,10 @@ function loadConfig() {
     console.error('Error loading config:', error);
   }
   
-  // Default config
   return {
     groqApiKey: '',
-    promptInstruction: DEFAULT_IMG_TO_PROMPT_INSTRUCTION,
-    captionInstruction: DEFAULT_CAPTION_INSTRUCTION
+    customPromptInstruction: DEFAULT_CUSTOM_PROMPT_INSTRUCTION,
+    customCaptionInstruction: DEFAULT_CUSTOM_CAPTION_INSTRUCTION
   };
 }
 
@@ -43,15 +42,36 @@ let config = loadConfig();
 // Storage
 const pendingImages = new Map();
 const processingUsers = new Set();
-const userLanguage = new Map(); // Store user language preference
+const userLanguage = new Map();
 
 // Check if user is owner
 function isOwner(userId) {
   return userId === OWNER_ID;
 }
 
+// Merge core + custom instructions with language
+function buildFullInstruction(type, language) {
+  const langText = language === 'English' ? 'English' : 'Indonesian';
+  
+  let coreInstruction, customInstruction;
+  
+  if (type === 'prompt') {
+    coreInstruction = CORE_PROMPT_INSTRUCTION;
+    customInstruction = config.customPromptInstruction;
+  } else {
+    coreInstruction = CORE_CAPTION_INSTRUCTION;
+    customInstruction = config.customCaptionInstruction;
+  }
+  
+  // Merge instructions
+  const fullInstruction = `${coreInstruction}\n\n${customInstruction}`;
+  
+  // Replace {LANGUAGE} placeholder
+  return fullInstruction.replace(/{LANGUAGE}/g, langText);
+}
+
 // API call
-async function callGroqAPI(imageBuffer, systemInstruction) {
+async function callGroqAPI(imageBuffer, fullInstruction) {
   if (!config.groqApiKey) {
     throw new Error('No API key configured. Owner must set key with /setkey');
   }
@@ -68,12 +88,12 @@ async function callGroqAPI(imageBuffer, systemInstruction) {
     body: JSON.stringify({
       model: 'meta-llama/llama-4-scout-17b-16e-instruct',
       messages: [
-        { role: 'system', content: systemInstruction },
+        { role: 'system', content: fullInstruction },
         {
           role: 'user',
           content: [
             { type: 'image_url', image_url: { url: dataUrl } },
-            { type: 'text', text: 'Analyze this image following the system instructions exactly.' }
+            { type: 'text', text: 'Analyze this image following ALL the system instructions exactly. Follow the language requirement strictly.' }
           ]
         }
       ],
@@ -114,10 +134,10 @@ bot.onText(/\/setpromptinstruction (.+)/s, async (msg, match) => {
   }
   
   const instruction = match[1].trim();
-  config.promptInstruction = instruction;
+  config.customPromptInstruction = instruction;
   
   if (saveConfig(config)) {
-    await bot.sendMessage(msg.chat.id, `✅ *Prompt Instruction Updated!*\n\nLength: ${instruction.length} characters`, { parse_mode: 'Markdown' });
+    await bot.sendMessage(msg.chat.id, `✅ *Custom Prompt Instruction Updated!*\n\nLength: ${instruction.length} characters\n\nThis will be merged with core instruction.`, { parse_mode: 'Markdown' });
   } else {
     await bot.sendMessage(msg.chat.id, '❌ Failed to save config.');
   }
@@ -129,10 +149,10 @@ bot.onText(/\/setcaptioninstruction (.+)/s, async (msg, match) => {
   }
   
   const instruction = match[1].trim();
-  config.captionInstruction = instruction;
+  config.customCaptionInstruction = instruction;
   
   if (saveConfig(config)) {
-    await bot.sendMessage(msg.chat.id, `✅ *Caption Instruction Updated!*\n\nLength: ${instruction.length} characters`, { parse_mode: 'Markdown' });
+    await bot.sendMessage(msg.chat.id, `✅ *Custom Caption Instruction Updated!*\n\nLength: ${instruction.length} characters\n\nThis will be merged with core instruction.`, { parse_mode: 'Markdown' });
   } else {
     await bot.sendMessage(msg.chat.id, '❌ Failed to save config.');
   }
@@ -149,14 +169,18 @@ bot.onText(/\/viewconfig/, async (msg) => {
 
 *API Key:* ${apiKeyStatus}
 
-*Prompt Instruction:* ${config.promptInstruction.length} characters
-*Caption Instruction:* ${config.captionInstruction.length} characters
+*Custom Instructions:*
+- Prompt: ${config.customPromptInstruction.length} chars
+- Caption: ${config.customCaptionInstruction.length} chars
+
+*How it works:*
+Core (fixed) + Custom (yours) = Full instruction
 
 *Commands:*
-/setkey <key> - Update API key
-/setpromptinstruction <text> - Update prompt instruction
-/setcaptioninstruction <text> - Update caption instruction
-/resetconfig - Reset to defaults`, { parse_mode: 'Markdown' });
+/setkey <key>
+/setpromptinstruction <text>
+/setcaptioninstruction <text>
+/resetconfig`, { parse_mode: 'Markdown' });
 });
 
 bot.onText(/\/resetconfig/, async (msg) => {
@@ -164,11 +188,11 @@ bot.onText(/\/resetconfig/, async (msg) => {
     return bot.sendMessage(msg.chat.id, '❌ Owner-only command.');
   }
   
-  config.promptInstruction = DEFAULT_IMG_TO_PROMPT_INSTRUCTION;
-  config.captionInstruction = DEFAULT_CAPTION_INSTRUCTION;
+  config.customPromptInstruction = DEFAULT_CUSTOM_PROMPT_INSTRUCTION;
+  config.customCaptionInstruction = DEFAULT_CUSTOM_CAPTION_INSTRUCTION;
   
   if (saveConfig(config)) {
-    await bot.sendMessage(msg.chat.id, '✅ Instructions reset to defaults!\n\n⚠️ API key preserved.', { parse_mode: 'Markdown' });
+    await bot.sendMessage(msg.chat.id, '✅ Custom instructions reset to defaults!\n\n⚠️ API key preserved.', { parse_mode: 'Markdown' });
   } else {
     await bot.sendMessage(msg.chat.id, '❌ Failed to save config.');
   }
@@ -182,22 +206,24 @@ bot.onText(/\/start/, (msg) => {
   let message = `🎨 *SyntheticGood Bot*
 
 Two features:
-📝 IMG to PROMPT - Detailed AI prompts
-✨ CAPTION - 5 social media captions
+📝 IMG to PROMPT - Detailed prompts
+✨ CAPTION - 5 captions with trending hashtags
 
 *Usage:*
-1. Send a photo
+1. Send photo
 2. Choose language (EN/ID)
-3. Choose feature (PROMPT/CAPTION)
+3. Choose feature
 4. Get result!
 
 Simple! 🚀`;
 
   if (isOwnerUser) {
     message += `\n\n👑 *Owner Commands:*
-/setkey <key> - Set API key
-/viewconfig - View config
-/resetconfig - Reset defaults`;
+/setkey <key>
+/viewconfig
+/setpromptinstruction <text>
+/setcaptioninstruction <text>
+/resetconfig`;
   }
   
   bot.sendMessage(msg.chat.id, message, { parse_mode: 'Markdown' });
@@ -206,14 +232,15 @@ Simple! 🚀`;
 bot.onText(/\/help/, (msg) => {
   bot.sendMessage(msg.chat.id, `❓ *Help*
 
-*For Everyone:*
-1. Send a photo
-2. Choose language (English/Indonesian)
+*Usage:*
+1. Send photo
+2. Choose: English or Indonesian
 3. Choose: PROMPT or CAPTION
 4. Get clean output
 
-*PROMPT:* Ultra-detailed AI image generation prompt
-*CAPTION:* 5 social media captions with TRENDING hashtags
+*Features:*
+📝 PROMPT: AI image generation prompt in your language
+✨ CAPTION: 5 captions + trending hashtags in your language
 
 Easy! 🎯`, { parse_mode: 'Markdown' });
 });
@@ -238,7 +265,6 @@ bot.on('photo', async (msg) => {
       timestamp: Date.now()
     });
     
-    // Ask for language first
     await bot.sendMessage(chatId, '🌍 *Choose language:*', {
       parse_mode: 'Markdown',
       reply_markup: {
@@ -263,7 +289,6 @@ bot.on('callback_query', async (query) => {
   
   await bot.answerCallbackQuery(query.id);
   
-  // Language selection
   if (data.startsWith('lang_')) {
     const lang = data === 'lang_en' ? 'English' : 'Indonesian';
     userLanguage.set(userId, lang);
@@ -282,14 +307,13 @@ bot.on('callback_query', async (query) => {
     return;
   }
   
-  // Type selection
   if (data.startsWith('type_')) {
     if (processingUsers.has(userId)) {
       return;
     }
     
     if (!pendingImages.has(userId)) {
-      return bot.sendMessage(chatId, '⚠️ Image expired. Send a new photo.');
+      return bot.sendMessage(chatId, '⚠️ Image expired. Send new photo.');
     }
     
     const lang = userLanguage.get(userId) || 'English';
@@ -303,23 +327,18 @@ bot.on('callback_query', async (query) => {
     try {
       await bot.deleteMessage(chatId, query.message.message_id).catch(() => {});
       
-      const processingMsg = await bot.sendMessage(chatId, '🔄 *Processing...*\n_10-15 seconds_', { parse_mode: 'Markdown' });
+      const processingMsg = await bot.sendMessage(chatId, `🔄 *Processing in ${lang}...*\n_10-15 seconds_`, { parse_mode: 'Markdown' });
       
-      // Replace {LANGUAGE} in instruction
-      let instruction;
-      if (type === 'prompt') {
-        instruction = config.promptInstruction.replace(/{LANGUAGE}/g, lang);
-      } else {
-        instruction = config.captionInstruction.replace(/{LANGUAGE}/g, lang);
-      }
+      // Build full instruction (core + custom + language)
+      const fullInstruction = buildFullInstruction(type, lang);
       
       if (type === 'prompt') {
-        const result = await callGroqAPI(imageBuffer, instruction);
+        const result = await callGroqAPI(imageBuffer, fullInstruction);
         await bot.deleteMessage(chatId, processingMsg.message_id).catch(() => {});
         await bot.sendMessage(chatId, result);
         
       } else {
-        const result = await callGroqAPI(imageBuffer, instruction);
+        const result = await callGroqAPI(imageBuffer, fullInstruction);
         await bot.deleteMessage(chatId, processingMsg.message_id).catch(() => {});
         
         const captions = result.split('---CAPTION_SEPARATOR---').map(c => c.trim()).filter(c => c);
@@ -360,6 +379,7 @@ setInterval(() => {
 
 bot.on('polling_error', (error) => console.error('Polling error:', error));
 
-console.log('✅ SyntheticGood Bot v2 is running...');
+console.log('✅ SyntheticGood Bot v3 is running...');
 console.log('👑 Owner ID:', OWNER_ID);
 console.log('🔑 API Key:', config.groqApiKey ? config.groqApiKey.substring(0, 20) + '...' : 'NOT SET');
+console.log('📝 Instruction system: CORE (fixed) + CUSTOM (editable)');
