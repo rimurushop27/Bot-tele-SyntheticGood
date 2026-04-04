@@ -6,6 +6,7 @@ const {
 } = require('./config');
 
 const DATA_FILE = path.join(__dirname, 'bot_data.json');
+const FEATURE_MODES = new Set(['off', 'prompt', 'caption', 'both']);
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
@@ -14,6 +15,7 @@ function clone(value) {
 function createDefaultData() {
   return {
     apiKey: '',
+    featureMode: 'prompt',
     promptProfiles: [clone(DEFAULT_PROMPT_PROFILE)],
     captionProfiles: [clone(DEFAULT_CAPTION_PROFILE)],
     activePromptProfileId: DEFAULT_PROMPT_PROFILE.id,
@@ -26,6 +28,7 @@ function sanitizeData(data) {
   if (!data || typeof data !== 'object') return safe;
 
   safe.apiKey = typeof data.apiKey === 'string' ? data.apiKey : '';
+  safe.featureMode = FEATURE_MODES.has(data.featureMode) ? data.featureMode : 'prompt';
   safe.promptProfiles = Array.isArray(data.promptProfiles) && data.promptProfiles.length
     ? data.promptProfiles.filter(isValidProfile)
     : [clone(DEFAULT_PROMPT_PROFILE)];
@@ -92,6 +95,7 @@ function generateProfileId(prefix) {
 
 module.exports = {
   DATA_FILE,
+  FEATURE_MODES,
   loadData,
   saveData,
   generateProfileId,

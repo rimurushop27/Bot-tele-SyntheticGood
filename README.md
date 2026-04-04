@@ -1,41 +1,68 @@
-# SyntheticGood Bot v4
+# SyntheticGood Bot v5
 
-Versi yang dibangun ulang agar lebih rapi, mudah dirawat, dan lebih aman dipakai untuk gonta-ganti system instruction.
+Versi rebuild dengan alur yang lebih simpel:
+- user cukup kirim foto
+- bot langsung jalan otomatis
+- mode proses diatur dari panel admin
+- system instruction bisa ditambah lewat teks biasa atau file `.txt`
 
-## Fitur utama
+## Perubahan utama
 
 ### User
 - Kirim foto
-- Pilih bahasa: Indonesia / English
-- Pilih mode: PROMPT / CAPTION
-- Bot memproses gambar memakai:
-  - Core system instruction
-  - Sistem instruction aktif sesuai mode
+- Bot langsung memproses otomatis
+- Tidak ada lagi pilihan bahasa
+- Tidak ada lagi pilihan mode dari sisi user
 
 ### Admin
 Saat admin dengan Telegram user id yang sesuai mengirim `/admin`, akan muncul menu:
+- Fitur proses user
 - API Key
 - SI PROMPT
 - SI CAPTION
 - Status
 
+## Mode proses user
+
+Admin bisa memilih salah satu mode berikut:
+- `PROMPT saja`
+- `CAPTION saja`
+- `PROMPT + CAPTION`
+- `Nonaktif`
+
+Jadi logikanya sekarang sepenuhnya dikontrol dari admin. User tinggal kirim foto dan bot langsung menjalankan mode yang sedang aktif.
+
+## System instruction via `.txt`
+
+Saat menambah profile SI:
+1. Admin pilih tambah profile
+2. Admin kirim nama profile
+3. Admin bisa lanjut dengan:
+   - kirim isi instruction langsung sebagai teks, atau
+   - upload file `.txt`
+
+Bot akan membaca isi `.txt`, lalu menyimpannya sebagai isi system instruction.
+
+Catatan:
+- bot tidak menyimpan file `.txt` sebagai logika terpisah
+- bot tidak menggabungkan gambar + file `.txt` saat inference
+- yang disimpan hanya isi teks hasil pembacaan file `.txt`
+
 ## Struktur penyimpanan
 
 Semua data runtime disimpan di `bot_data.json`:
 - API key
-- Daftar profile SI PROMPT
-- Daftar profile SI CAPTION
-- Profile aktif untuk PROMPT
-- Profile aktif untuk CAPTION
+- mode proses user
+- daftar profile SI PROMPT
+- daftar profile SI CAPTION
+- profile aktif untuk PROMPT
+- profile aktif untuk CAPTION
 
-## Cara kerja sistem instruction
+## Cara kerja system instruction
 
 Setiap request selalu digabung seperti ini:
-
 - Core system instruction
 - Active custom system instruction
-
-Jadi sistem utama tetap menjadi petunjuk inti, lalu profile aktif menjadi tambahan instruksi khusus.
 
 ## Perintah penting
 
@@ -46,18 +73,7 @@ Jadi sistem utama tetap menjadi petunjuk inti, lalu profile aktif menjadi tambah
 
 ### User
 - `/start` → mulai
-- kirim foto → pilih bahasa → pilih mode
-
-## Manajemen profile
-
-Admin bisa:
-- menambah beberapa SI PROMPT
-- menambah beberapa SI CAPTION
-- melihat detail profile
-- mengganti profile aktif kapan saja
-- menghapus profile tambahan
-
-Profile default tidak bisa dihapus agar sistem tetap punya fallback.
+- kirim foto → bot langsung proses
 
 ## File
 
@@ -74,4 +90,5 @@ Profile default tidak bisa dihapus agar sistem tetap punya fallback.
 4. Buka bot di Telegram
 5. Sebagai admin, kirim `/admin`
 6. Set API key
-7. Tambah atau pilih SI PROMPT dan SI CAPTION yang ingin aktif
+7. Pilih mode proses user
+8. Tambah atau pilih SI PROMPT dan/atau SI CAPTION yang ingin aktif

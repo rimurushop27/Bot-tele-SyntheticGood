@@ -13,23 +13,11 @@ const { loadData, saveData, generateProfileId } = require('./storage');
 const bot = new TelegramBot(BOT_TOKEN, { polling: true });
 let db = loadData();
 
-const userSessions = new Map();
 const adminStates = new Map();
 const activeJobs = new Set();
 
 function isOwner(userId) {
   return Number(userId) === Number(OWNER_ID);
-}
-
-function getSession(userId) {
-  if (!userSessions.has(userId)) {
-    userSessions.set(userId, {});
-  }
-  return userSessions.get(userId);
-}
-
-function clearSession(userId) {
-  userSessions.delete(userId);
 }
 
 function setAdminState(userId, state) {
@@ -67,12 +55,11 @@ function maskApiKey(apiKey) {
   return `${apiKey.slice(0, 6)}...${apiKey.slice(-4)}`;
 }
 
-function languageName(code) {
-  return code === 'en' ? 'English' : 'Indonesia';
-}
-
 function modeName(mode) {
-  return mode === 'caption' ? 'CAPTION' : 'PROMPT';
+  if (mode === 'prompt') return 'PROMPT';
+  if (mode === 'caption') return 'CAPTION';
+  if (mode === 'both') return 'PROMPT + CAPTION';
+  return 'NONAKTIF';
 }
 
 function getProfiles(type) {
@@ -85,47 +72,22 @@ function getActiveProfile(type) {
   return profiles.find((item) => item.id === activeId) || profiles[0];
 }
 
-function buildSystemInstruction(type, langCode) {
+function buildSystemInstruction(type) {
   const core = type === 'caption' ? CORE_CAPTION_INSTRUCTION : CORE_PROMPT_INSTRUCTION;
   const activeProfile = getActiveProfile(type);
-  const lang = languageName(langCode);
 
-  const combined = [
+  return [
     core,
     '',
     'ACTIVE CUSTOM SYSTEM INSTRUCTION:',
     activeProfile.content,
   ].join('\n');
-
-  return combined.replace(/{LANGUAGE_NAME}/g, lang);
-}
-
-function userMainKeyboard() {
-  return {
-    inline_keyboard: [
-      [
-        { text: '🇮🇩 Indonesia', callback_data: 'lang:id' },
-        { text: '🇬🇧 English', callback_data: 'lang:en' },
-      ],
-    ],
-  };
-}
-
-function modeKeyboard(langCode) {
-  return {
-    inline_keyboard: [
-      [
-        { text: '📝 PROMPT', callback_data: `mode:prompt:${langCode}` },
-        { text: '✨ CAPTION', callback_data: `mode:caption:${langCode}` },
-      ],
-      [{ text: '↩️ Ganti Bahasa', callback_data: 'go:language' }],
-    ],
-  };
 }
 
 function adminMainKeyboard() {
   return {
     inline_keyboard: [
+      [{ text: '⚙️ Fitur Proses', callback_data: 'admin:feature:menu' }],
       [{ text: '🔑 API Key', callback_data: 'admin:apikey:menu' }],
       [{ text: '📝 SI PROMPT', callback_data: 'admin:prompt:menu' }],
       [{ text: '✨ SI CAPTION', callback_data: 'admin:caption:menu' }],
@@ -166,6 +128,20 @@ function profileDetailKeyboard(type, profileId, canDelete) {
   return { inline_keyboard: rows };
 }
 
+function featureKeyboard() {
+  const current = db.featureMode;
+  const mark = (value) => (current === value ? '✅ ' : '');
+  return {
+    inline_keyboard: [
+      [{ text: `${mark('prompt')}PROMPT saja`, callback_data: 'admin:feature:set:prompt' }],
+      [{ text: `${mark('caption')}CAPTION saja`, callback_data: 'admin:feature:set:caption' }],
+      [{ text: `${mark('both')}PROMPT + CAPTION`, callback_data: 'admin:feature:set:both' }],
+      [{ text: `${mark('off')}Nonaktifkan proses user`, callback_data: 'admin:feature:set:off' }],
+      [{ text: '⬅️ Kembali', callback_data: 'admin:home' }],
+    ],
+  };
+}
+
 function getStatusText() {
   const activePrompt = getActiveProfile('prompt');
   const activeCaption = getActiveProfile('caption');
@@ -174,18 +150,18 @@ function getStatusText() {
     `<b>${escapeHtml(BOT_TITLE)} - Status Sistem</b>`,
     '',
     `<b>Admin Telegram ID:</b> <code>${OWNER_ID}</code>`,
+    `<b>Mode proses user:</b> ${escapeHtml(modeName(db.featureMode))}`,
     `<b>API Key:</b> ${escapeHtml(maskApiKey(db.apiKey))}`,
     `<b>Jumlah SI PROMPT:</b> ${db.promptProfiles.length}`,
     `<b>Jumlah SI CAPTION:</b> ${db.captionProfiles.length}`,
     `<b>SI PROMPT aktif:</b> ${escapeHtml(activePrompt.name)}`,
     `<b>SI CAPTION aktif:</b> ${escapeHtml(activeCaption.name)}`,
     '',
-    'Core system instruction akan selalu digabungkan dengan sistem instruction aktif sebelum gambar diproses.',
+    'User cukup kirim foto. Bot langsung memproses sesuai fitur yang sedang aktif di panel admin.',
   ].join('\n');
 }
 
 async function sendOrEdit(chatId, text, options = {}, query = null) {
-  const payload = { chat_id: chatId, text, parse_mode: 'HTML', ...options };
   if (query?.message?.message_id) {
     try {
       return await bot.editMessageText(text, {
@@ -196,11 +172,11 @@ async function sendOrEdit(chatId, text, options = {}, query = null) {
       });
     } catch (error) {
       if (!String(error.message).includes('message is not modified')) {
-        return bot.sendMessage(chatId, text, options);
+        return bot.sendMessage(chatId, text, { ...options, parse_mode: 'HTML' });
       }
     }
   }
-  return bot.sendMessage(chatId, text, options);
+  return bot.sendMessage(chatId, text, { ...options, parse_mode: 'HTML' });
 }
 
 async function showAdminHome(chatId, query = null) {
@@ -211,11 +187,12 @@ async function showAdminHome(chatId, query = null) {
       `<b>Admin Panel</b>`,
       '',
       'Pilih menu pengaturan:',
+      '• Fitur proses user',
       '• API Key',
       '• SI PROMPT',
       '• SI CAPTION',
       '',
-      'Semua hasil AI selalu memakai: <b>Core System Instruction + Sistem Instruction Aktif</b>.',
+      'User tidak perlu memilih mode. Kirim foto langsung diproses sesuai fitur aktif.',
     ].join('\n'),
     { reply_markup: adminMainKeyboard() },
     query,
@@ -245,35 +222,66 @@ async function showApiKeyMenu(chatId, query = null) {
   );
 }
 
-async function processImage(chatId, userId) {
-  const session = getSession(userId);
-  if (!session.photoBuffer || !session.lang || !session.mode) {
-    return bot.sendMessage(chatId, 'Data proses belum lengkap. Kirim foto lagi ya.');
+async function showFeatureMenu(chatId, query = null) {
+  return sendOrEdit(
+    chatId,
+    [
+      '<b>Mode Proses User</b>',
+      '',
+      `<b>Aktif sekarang:</b> ${escapeHtml(modeName(db.featureMode))}`,
+      '',
+      'Pilih bagaimana bot memproses foto dari user secara otomatis.',
+    ].join('\n'),
+    { reply_markup: featureKeyboard() },
+    query,
+  );
+}
+
+async function getTelegramFileBuffer(fileId) {
+  const file = await bot.getFile(fileId);
+  const fileUrl = `https://api.telegram.org/file/bot${BOT_TOKEN}/${file.file_path}`;
+  const response = await fetch(fileUrl);
+  if (!response.ok) {
+    throw new Error('Gagal mengunduh file dari Telegram.');
+  }
+  return response.buffer();
+}
+
+async function processImage(chatId, userId, imageBuffer) {
+  if (!imageBuffer) {
+    return bot.sendMessage(chatId, 'Data gambar tidak ditemukan. Kirim ulang fotonya.');
   }
   if (activeJobs.has(userId)) {
-    return bot.sendMessage(chatId, 'Masih ada proses yang berjalan. Tunggu sebentar lalu coba lagi.');
+    return bot.sendMessage(chatId, 'Masih ada proses yang berjalan. Tunggu sebentar lalu kirim lagi.');
   }
 
   activeJobs.add(userId);
   try {
+    refreshDb();
+
     if (!db.apiKey) {
-      throw new Error('API key belum diatur admin. Buka /admin lalu set API key terlebih dahulu.');
+      throw new Error('API key belum diatur admin.');
+    }
+    if (db.featureMode === 'off') {
+      throw new Error('Fitur proses user sedang dinonaktifkan admin.');
     }
 
-    const systemInstruction = buildSystemInstruction(session.mode, session.lang);
-    await bot.sendMessage(chatId, `⏳ Sedang memproses ${modeName(session.mode)} dalam ${languageName(session.lang)}...`);
+    await bot.sendMessage(chatId, `⏳ Memproses gambar dengan mode ${modeName(db.featureMode)}...`);
 
-    const result = await callGroqVision(session.photoBuffer, session.mode, systemInstruction, session.lang);
-    clearSession(userId);
+    if (db.featureMode === 'prompt' || db.featureMode === 'both') {
+      const promptInstruction = buildSystemInstruction('prompt');
+      const promptResult = await callGroqVision(imageBuffer, 'prompt', promptInstruction);
+      await bot.sendMessage(chatId, `<b>PROMPT</b>\n${escapeHtml(promptResult)}`, { parse_mode: 'HTML' });
+    }
 
-    if (session.mode === 'caption') {
-      const captions = result.split('---CAPTION_SEPARATOR---').map((item) => item.trim()).filter(Boolean);
+    if (db.featureMode === 'caption' || db.featureMode === 'both') {
+      const captionInstruction = buildSystemInstruction('caption');
+      const captionResult = await callGroqVision(imageBuffer, 'caption', captionInstruction);
+      const captions = captionResult.split('---CAPTION_SEPARATOR---').map((item) => item.trim()).filter(Boolean);
       const rendered = captions.length
         ? captions.map((item, index) => `<b>Caption ${index + 1}</b>\n${escapeHtml(item)}`).join('\n\n')
-        : escapeHtml(result);
+        : escapeHtml(captionResult);
       await bot.sendMessage(chatId, rendered, { parse_mode: 'HTML' });
-    } else {
-      await bot.sendMessage(chatId, escapeHtml(result), { parse_mode: 'HTML' });
     }
   } catch (error) {
     console.error('Process error:', error);
@@ -283,11 +291,11 @@ async function processImage(chatId, userId) {
   }
 }
 
-async function callGroqVision(imageBuffer, mode, systemInstruction, langCode) {
+async function callGroqVision(imageBuffer, mode, systemInstruction) {
   const base64Image = imageBuffer.toString('base64');
   const userPrompt = mode === 'caption'
-    ? `Analyze this image carefully and produce caption output in ${languageName(langCode)}.`
-    : `Analyze this image carefully and produce prompt output in ${languageName(langCode)}.`;
+    ? 'Analyze this image carefully and produce the final caption output.'
+    : 'Analyze this image carefully and produce the final prompt output.';
 
   const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
     method: 'POST',
@@ -326,19 +334,16 @@ async function callGroqVision(imageBuffer, mode, systemInstruction, langCode) {
 
 bot.onText(/^\/start$/, async (msg) => {
   clearAdminState(msg.from.id);
-  clearSession(msg.from.id);
   const lines = [
     `<b>${escapeHtml(BOT_TITLE)}</b>`,
     '',
-    'Kirim foto lalu pilih bahasa dan mode:',
-    '• 📝 PROMPT',
-    '• ✨ CAPTION',
+    'Kirim foto, lalu bot akan langsung memprosesnya otomatis sesuai mode yang diaktifkan admin.',
     '',
-    'Bot akan menganalisa gambar dengan sistem utama lalu menggabungkannya dengan sistem instruction aktif.',
+    'Tidak ada lagi pilihan bahasa atau pilihan caption/prompt dari user.',
   ];
 
   if (isOwner(msg.from.id)) {
-    lines.push('', 'Sebagai admin, buka <b>/admin</b> untuk mengatur API key, SI PROMPT, dan SI CAPTION.');
+    lines.push('', 'Sebagai admin, buka <b>/admin</b> untuk mengatur mode proses, API key, dan system instruction.');
   }
 
   await bot.sendMessage(msg.chat.id, lines.join('\n'), { parse_mode: 'HTML' });
@@ -350,8 +355,7 @@ bot.onText(/^\/myid$/, async (msg) => {
 
 bot.onText(/^\/cancel$/, async (msg) => {
   clearAdminState(msg.from.id);
-  clearSession(msg.from.id);
-  await bot.sendMessage(msg.chat.id, 'Proses dibatalkan.');
+  await bot.sendMessage(msg.chat.id, 'Proses admin dibatalkan.');
 });
 
 bot.onText(/^\/admin$/, async (msg) => {
@@ -369,23 +373,8 @@ bot.on('photo', async (msg) => {
 
   try {
     const photo = msg.photo[msg.photo.length - 1];
-    const file = await bot.getFile(photo.file_id);
-    const fileUrl = `https://api.telegram.org/file/bot${BOT_TOKEN}/${file.file_path}`;
-    const response = await fetch(fileUrl);
-    if (!response.ok) {
-      throw new Error('Gagal mengunduh foto dari Telegram.');
-    }
-
-    const buffer = await response.buffer();
-    const session = getSession(userId);
-    session.photoBuffer = buffer;
-    session.fileId = photo.file_id;
-    delete session.lang;
-    delete session.mode;
-
-    await bot.sendMessage(chatId, 'Foto diterima. Pilih bahasa output:', {
-      reply_markup: userMainKeyboard(),
-    });
+    const buffer = await getTelegramFileBuffer(photo.file_id);
+    await processImage(chatId, userId, buffer);
   } catch (error) {
     console.error('Photo error:', error);
     await bot.sendMessage(chatId, `❌ Gagal membaca foto. ${error.message}`);
@@ -406,6 +395,17 @@ bot.on('callback_query', async (query) => {
       if (!isOwner(userId)) throw new Error('Bukan admin.');
       refreshDb();
       await sendOrEdit(chatId, getStatusText(), { reply_markup: adminMainKeyboard() }, query);
+    } else if (data === 'admin:feature:menu') {
+      if (!isOwner(userId)) throw new Error('Bukan admin.');
+      refreshDb();
+      await showFeatureMenu(chatId, query);
+    } else if (/^admin:feature:set:/.test(data)) {
+      if (!isOwner(userId)) throw new Error('Bukan admin.');
+      const mode = data.split(':').pop();
+      db.featureMode = mode;
+      persistDb(db);
+      await bot.answerCallbackQuery(query.id, { text: `Mode aktif: ${modeName(mode)}` });
+      await showFeatureMenu(chatId, query);
     } else if (data === 'admin:apikey:menu') {
       if (!isOwner(userId)) throw new Error('Bukan admin.');
       refreshDb();
@@ -503,29 +503,58 @@ bot.on('callback_query', async (query) => {
       persistDb(db);
       await bot.answerCallbackQuery(query.id, { text: `Profile dihapus: ${target.name}` });
       await sendOrEdit(chatId, `🗑️ Profile <b>${escapeHtml(target.name)}</b> berhasil dihapus.`, { reply_markup: renderProfileMenu(type) }, query);
-    } else if (data === 'go:language') {
-      const session = getSession(userId);
-      if (!session.photoBuffer) throw new Error('Kirim foto terlebih dahulu.');
-      delete session.lang;
-      delete session.mode;
-      await sendOrEdit(chatId, 'Pilih bahasa output:', { reply_markup: userMainKeyboard() }, query);
-    } else if (data.startsWith('lang:')) {
-      const session = getSession(userId);
-      if (!session.photoBuffer) throw new Error('Kirim foto terlebih dahulu.');
-      const lang = data.split(':')[1];
-      session.lang = lang;
-      await sendOrEdit(chatId, `Bahasa dipilih: <b>${languageName(lang)}</b>\nSekarang pilih mode output.`, { reply_markup: modeKeyboard(lang) }, query);
-    } else if (data.startsWith('mode:')) {
-      const session = getSession(userId);
-      if (!session.photoBuffer) throw new Error('Kirim foto terlebih dahulu.');
-      const [, mode, lang] = data.split(':');
-      session.mode = mode;
-      session.lang = lang;
-      await sendOrEdit(chatId, `Mode dipilih: <b>${modeName(mode)}</b>\nBahasa: <b>${languageName(lang)}</b>`, {}, query);
-      await processImage(chatId, userId);
     }
   } catch (error) {
     await bot.answerCallbackQuery(query.id, { text: error.message, show_alert: true }).catch(() => {});
+  }
+});
+
+bot.on('document', async (msg) => {
+  const userId = msg.from.id;
+  if (!isOwner(userId)) return;
+
+  const state = getAdminState(userId);
+  if (!state || state.action !== 'add_profile_content') return;
+
+  try {
+    const document = msg.document || {};
+    const fileName = String(document.file_name || '').toLowerCase();
+    const mimeType = String(document.mime_type || '').toLowerCase();
+
+    if (!fileName.endsWith('.txt') && mimeType !== 'text/plain') {
+      return bot.sendMessage(msg.chat.id, 'File harus berformat .txt agar bisa dibaca sebagai system instruction.');
+    }
+
+    const fileBuffer = await getTelegramFileBuffer(document.file_id);
+    const content = fileBuffer.toString('utf8').replace(/^\uFEFF/, '').trim();
+
+    if (content.length < 20) {
+      return bot.sendMessage(msg.chat.id, 'Isi file .txt terlalu pendek. Minimal 20 karakter.');
+    }
+
+    const profile = {
+      id: generateProfileId(state.type),
+      name: state.name,
+      content,
+    };
+    const listKey = state.type === 'caption' ? 'captionProfiles' : 'promptProfiles';
+    db[listKey].push(profile);
+    persistDb(db);
+    clearAdminState(userId);
+
+    await bot.sendMessage(msg.chat.id, `✅ File .txt berhasil dibaca dan disimpan sebagai profile <b>${escapeHtml(profile.name)}</b>.`, { parse_mode: 'HTML' });
+    await bot.sendMessage(
+      msg.chat.id,
+      'Isi .txt sudah dipindahkan ke sistem instruction. File tidak disimpan sebagai referensi proses gambar.',
+    );
+    return bot.sendMessage(
+      msg.chat.id,
+      `Sekarang kamu bisa memilih profile itu dari menu SI ${state.type === 'prompt' ? 'PROMPT' : 'CAPTION'}.`,
+      { reply_markup: renderProfileMenu(state.type) },
+    );
+  } catch (error) {
+    console.error('Admin txt error:', error);
+    await bot.sendMessage(msg.chat.id, `❌ ${error.message}`);
   }
 });
 
@@ -554,7 +583,7 @@ bot.on('message', async (msg) => {
       setAdminState(userId, { action: 'add_profile_content', type: state.type, name });
       return bot.sendMessage(
         msg.chat.id,
-        `Nama disimpan: <b>${escapeHtml(name)}</b>\nSekarang kirim isi sistem instruction untuk profile ini.`,
+        `Nama disimpan: <b>${escapeHtml(name)}</b>\nSekarang kirim isi system instruction. Bisa kirim langsung sebagai teks atau upload file .txt.`,
         { parse_mode: 'HTML' },
       );
     }
